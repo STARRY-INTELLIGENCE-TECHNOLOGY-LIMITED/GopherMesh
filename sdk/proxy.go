@@ -62,7 +62,7 @@ func (e *endpointState) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// 3. 静默冷启动状态机
 	if !e.engine.isReady(e.cfg.InternalPort) {
-		if err := e.startOnce(r.Context()); e != nil {
+		if err := e.startOnce(r.Context()); err != nil {
 			status := http.StatusServiceUnavailable
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				status = http.StatusGatewayTimeout
