@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// EndpointStatus 表示单个计算端点的运行时状态
-type EndpointStatus struct {
+// BackendStatus 表示单个后端实例的运行时状态
+type BackendStatus struct {
 	Name         string `json:"name"`
 	InternalPort string `json:"internalPort"`
 	Status       string `json:"status"` // Dormant 休眠 或 Running 运行
@@ -16,9 +16,17 @@ type EndpointStatus struct {
 	Uptime       string `json:"uptime,omitempty"`
 }
 
+// RouteStatus 表示单个路由及其下游后端的状态
+type RouteStatus struct {
+	Name        string          `json:"name"`
+	Protocol    string          `json:"protocol"`
+	LoadBalance string          `json:"loadBalance"`
+	Backends    []BackendStatus `json:"backends"`
+}
+
 // MeshState 控制台向主引擎索取数据的契约
 type MeshState interface {
-	GetStatus() map[string]EndpointStatus
+	GetStatus() map[string]RouteStatus
 	GetLogs(port string) []string // 新增获取日志接口
 }
 

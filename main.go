@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -12,8 +13,11 @@ import (
 )
 
 func main() {
+	configPath := flag.String("config", "config.json", "Path to the GopherMesh config file")
+	flag.Parse()
+
 	// 1. 加载配置
-	cfg, err := mesh.LoadConfig("config.json")
+	cfg, err := mesh.LoadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}

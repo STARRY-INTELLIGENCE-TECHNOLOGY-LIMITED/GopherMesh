@@ -9,25 +9,48 @@ import (
 
 // Config 代表 GopherMesh 全局配置（支持无头静默运行）
 type Config struct {
-	DashboardPort  string                    `json:"dashboard_port"`
-	TrustedOrigins []string                  `json:"trusted_origins"`
-	ServiceName    string                    `json:"service_name,omitempty"`
-	InternalPort   string                    `json:"internal_port,omitempty"`
-	Endpoints      map[string]EndpointConfig `json:"endpoints"`
+	DashboardPort  string                 `json:"dashboard_port"`
+	TrustedOrigins []string               `json:"trusted_origins"`
+	ServiceName    string                 `json:"service_name,omitempty"`
+	InternalPort   string                 `json:"internal_port,omitempty"`
+	Routes         map[string]RouteConfig `json:"routes,omitempty"`
+	Endpoints      map[string]RouteConfig `json:"endpoints,omitempty"` // Deprecated: legacy alias for routes.
 }
 
-// EndpointConfig 定义了单个本地计算断点的静默调度规则
-type EndpointConfig struct {
-	Name         string   `json:"name"`
-	Cmd          string   `json:"cmd"`                // 执行的二进制目标，为空或"internal"表示内部路由
-	Args         []string `json:"args,omitempty"`     // 启动参数
-	InternalPort string   `json:"internal_port"`      // 目标进程实际监听的本地端口
-	Protocol     string   `json:"protocol,omitempty"` // 流量类型：默认为空(http)，可配置为"tcp"开启L4零拷贝对拷
+// RouteConfig 定义单个对外暴露端口的路由规则。
+type RouteConfig struct {
+	Name        string          `json:"name"`
+	Protocol    string          `json:"protocol,omitempty"`     // 默认为 http，可配置为 tcp
+	LoadBalance string          `json:"load_balance,omitempty"` // 当前仅支持 round_robin
+	Backends    []BackendConfig `json:"backends,omitempty"`
+
+	// Deprecated: legacy single-backend fields.
+	Cmd          string   `json:"cmd,omitempty"`
+	Args         []string `json:"args,omitempty"`
+	InternalPort string   `json:"internal_port,omitempty"`
+}
+
+// BackendConfig 定义路由下单个实际承载请求的后端。
+type BackendConfig struct {
+	Name         string   `json:"name,omitempty"`
+	Cmd          string   `json:"cmd"`            // 执行的二进制目标，为空或"internal"表示内部路由
+	Args         []string `json:"args,omitempty"` // 启动参数
+	InternalPort string   `json:"internal_port"`  // 目标进程实际监听的本地端口
 }
 
 const (
 	defaultDashboardPort = "9999"
+	defaultLoadBalance   = "round_robin"
 )
+
+func isInternalCommand(cmd string) bool {
+	cmd = strings.TrimSpace(cmd)
+	return cmd == "" || strings.EqualFold(cmd, "internal")
+}
+
+func isInternalRoute(route RouteConfig) bool {
+	return len(route.Backends) == 1 && isInternalCommand(route.Backends[0].Cmd)
+}
 
 // DefaultConfig 生成包含防环路机制与默认放行白名单的配置
 func DefaultConfig() Config {
@@ -36,11 +59,17 @@ func DefaultConfig() Config {
 		// 默认允许所有的跨域请求以保证开发体验
 		// 部署到暴露环境时，应修改为类似 ["https://your-host.com"]
 		TrustedOrigins: []string{"*"},
-		Endpoints: map[string]EndpointConfig{
+		Routes: map[string]RouteConfig{
 			"8081": {
-				Name:         "Internal-Healthcheck",
-				Cmd:          "internal",
-				InternalPort: defaultDashboardPort,
+				Name:     "Internal-Healthcheck",
+				Protocol: "http",
+				Backends: []BackendConfig{
+					{
+						Name:         "dashboard",
+						Cmd:          "internal",
+						InternalPort: defaultDashboardPort,
+					},
+				},
 			},
 		},
 	}
@@ -85,35 +114,110 @@ func (c Config) Normalize() (Config, error) {
 	if len(c.TrustedOrigins) == 0 {
 		c.TrustedOrigins = []string{"*"}
 	}
-	if len(c.Endpoints) == 0 {
-		c.Endpoints = DefaultConfig().Endpoints
+
+	routes := c.Routes
+	if len(routes) == 0 && len(c.Endpoints) > 0 {
+		routes = c.Endpoints
+	}
+	if len(routes) == 0 {
+		routes = DefaultConfig().Routes
 	}
 
-	normalized := make(map[string]EndpointConfig, len(c.Endpoints))
-	for port, ep := range c.Endpoints {
-		p := strings.TrimSpace(port)
-		if p == "" {
+	normalized := make(map[string]RouteConfig, len(routes))
+	seenBackendPorts := make(map[string]string)
+
+	for port, route := range routes {
+		publicPort := strings.TrimSpace(port)
+		if publicPort == "" {
 			return Config{}, fmt.Errorf("invalid blank port")
 		}
 
-		ep.Cmd = strings.TrimSpace(ep.Cmd)
-		isInternal := strings.ToLower(ep.Cmd) == "" || strings.ToLower(ep.Cmd) == "internal"
+		route.Name = strings.TrimSpace(route.Name)
+		if route.Name == "" {
+			route.Name = "Route-" + publicPort
+		}
 
-		if isInternal {
-			if strings.TrimSpace(ep.InternalPort) == "" {
-				ep.InternalPort = c.DashboardPort
-			}
-		} else {
-			if strings.TrimSpace(ep.InternalPort) == "" {
-				return Config{}, fmt.Errorf("invalid internal port %q", p)
-			}
-			ep.Protocol = strings.ToLower(strings.TrimSpace(ep.Protocol))
-			if ep.Protocol != "tcp" {
-				ep.Protocol = "http"
+		route.Protocol = normalizeProtocol(route.Protocol)
+		route.LoadBalance = normalizeLoadBalance(route.LoadBalance)
+
+		backends := route.Backends
+		if len(backends) == 0 {
+			backends = []BackendConfig{
+				{
+					Name:         route.Name,
+					Cmd:          route.Cmd,
+					Args:         route.Args,
+					InternalPort: route.InternalPort,
+				},
 			}
 		}
-		normalized[p] = ep
+		if len(backends) == 0 {
+			return Config{}, fmt.Errorf("route %q has no backends", publicPort)
+		}
+
+		normalizedBackends := make([]BackendConfig, 0, len(backends))
+		internalCount := 0
+
+		for index, backend := range backends {
+			backend.Name = strings.TrimSpace(backend.Name)
+			backend.Cmd = strings.TrimSpace(backend.Cmd)
+
+			if isInternalCommand(backend.Cmd) {
+				internalCount++
+				backend.Cmd = "internal"
+				if strings.TrimSpace(backend.InternalPort) == "" {
+					backend.InternalPort = c.DashboardPort
+				}
+			} else {
+				if strings.TrimSpace(backend.InternalPort) == "" {
+					return Config{}, fmt.Errorf("invalid internal port %q backend %d", publicPort, index+1)
+				}
+				if previousRoute, exists := seenBackendPorts[backend.InternalPort]; exists {
+					return Config{}, fmt.Errorf("duplicate internal port %q used by routes %q and %q", backend.InternalPort, previousRoute, publicPort)
+				}
+				seenBackendPorts[backend.InternalPort] = publicPort
+			}
+
+			if backend.Name == "" {
+				backend.Name = fmt.Sprintf("%s-%d", route.Name, index+1)
+			}
+			normalizedBackends = append(normalizedBackends, backend)
+		}
+
+		if internalCount > 0 {
+			if internalCount != len(normalizedBackends) {
+				return Config{}, fmt.Errorf("route %q mixes internal and external backends", publicPort)
+			}
+			if len(normalizedBackends) != 1 {
+				return Config{}, fmt.Errorf("route %q can only have one internal backend", publicPort)
+			}
+		}
+
+		route.Backends = normalizedBackends
+		route.Cmd = ""
+		route.Args = nil
+		route.InternalPort = ""
+
+		normalized[publicPort] = route
 	}
-	c.Endpoints = normalized
+
+	c.Routes = normalized
+	c.Endpoints = nil
 	return c, nil
+}
+
+func normalizeProtocol(protocol string) string {
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == "tcp" {
+		return "tcp"
+	}
+	return "http"
+}
+
+func normalizeLoadBalance(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == defaultLoadBalance {
+		return mode
+	}
+	return defaultLoadBalance
 }

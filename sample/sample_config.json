@@ -1,0 +1,148 @@
+{
+  "dashboard_port": "19999",
+  "trusted_origins": [
+    "*"
+  ],
+  "routes": {
+    "18081": {
+      "name": "Sample-L7-HTTP-Hello",
+      "load_balance": "round_robin",
+      "backends": [
+        {
+          "name": "http-hello-a",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/l7http/hello",
+            "-port",
+            "19081",
+            "-name",
+            "http-hello-a"
+          ],
+          "internal_port": "19081"
+        },
+        {
+          "name": "http-hello-b",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/l7http/hello",
+            "-port",
+            "19082",
+            "-name",
+            "http-hello-b"
+          ],
+          "internal_port": "19082"
+        }
+      ]
+    },
+    "18082": {
+      "name": "Sample-L7-HTTP-Sum",
+      "load_balance": "round_robin",
+      "backends": [
+        {
+          "name": "http-sum-a",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/l7http/sum",
+            "-port",
+            "19083",
+            "-name",
+            "http-sum-a"
+          ],
+          "internal_port": "19083"
+        },
+        {
+          "name": "http-sum-b",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/l7http/sum",
+            "-port",
+            "19084",
+            "-name",
+            "http-sum-b"
+          ],
+          "internal_port": "19084"
+        }
+      ]
+    },
+    "17081": {
+      "protocol": "tcp",
+      "name": "Sample-L4-TCP-Echo",
+      "load_balance": "round_robin",
+      "backends": [
+        {
+          "name": "tcp-echo-a",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/l4tcp/echo",
+            "-port",
+            "19091",
+            "-name",
+            "tcp-echo-a"
+          ],
+          "internal_port": "19091"
+        },
+        {
+          "name": "tcp-echo-b",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/l4tcp/echo",
+            "-port",
+            "19092",
+            "-name",
+            "tcp-echo-b"
+          ],
+          "internal_port": "19092"
+        }
+      ]
+    },
+    "17082": {
+      "name": "Sample-L4-TCP-Uppercase",
+      "protocol": "tcp",
+      "load_balance": "round_robin",
+      "backends": [
+        {
+          "name": "tcp-uppercase-a",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/l4tcp/uppercase",
+            "-port",
+            "19093",
+            "-name",
+            "tcp-uppercase-a"
+          ],
+          "internal_port": "19093"
+        },
+        {
+          "name": "tcp-uppercase-b",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/l4tcp/uppercase",
+            "-port",
+            "19094",
+            "-name",
+            "tcp-uppercase-b"
+          ],
+          "internal_port": "19094"
+        }
+      ]
+    },
+    "18000": {
+      "name": "Internal-Healthcheck",
+      "backends": [
+        {
+          "name": "dashboard",
+          "cmd": "internal",
+          "internal_port": "19999"
+        }
+      ]
+    }
+  }
+}
