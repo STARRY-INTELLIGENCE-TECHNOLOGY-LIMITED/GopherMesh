@@ -199,6 +199,32 @@ func (e *Engine) GetStatus() map[string]dashboard.RouteStatus {
 	return result
 }
 
+// KillProcess 实现 dashboard.MeshState 接口，支持手动kill底层进程
+func (e *Engine) KillProcess(port string) error {
+	e.procMu.Lock()
+	defer e.procMu.Unlock()
+
+	info, exists := e.process[port]
+	if !exists {
+		return fmt.Errorf("target port %s not found or suspended", port)
+	}
+
+	if info.Cmd.Process == nil {
+		return fmt.Errorf("target port %s process is not initialized", port)
+	}
+
+	log.Printf("[Dashboard] force kill process PID: %d Port: %s", info.Cmd.Process.Pid, port)
+
+	// 发送 kill 信号
+	// 进程结束后，warden.go中的cmd.Wait()会捕获并安全运行map清理工作
+	err := info.Cmd.Process.Kill()
+	// 忽略进程已经结束 ErrProcessDone 或 Windows 下进程句柄失效 invalid argument 错误
+	if err != nil && !errors.Is(err, os.ErrProcessDone) && !strings.Contains(strings.ToLower(err.Error()), "invalid argument") {
+		return fmt.Errorf("force kill process failed: %w", err)
+	}
+	return nil
+}
+
 // Shutdown 触发安全退出，释放端口
 func (e *Engine) Shutdown(ctx context.Context) error {
 	if e.role != RoleMaster {
@@ -231,9 +257,11 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	for port, info := range e.process {
 		if info.Cmd.Process != nil {
 			log.Printf("[Shutdown] killing process PID: %d Port: %s", info.Cmd.Process.Pid, port)
-		}
-		if err := info.Cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			errs = append(errs, fmt.Errorf("force kill PID: %d failed: %v", info.Cmd.Process.Pid, err))
+
+			err := info.Cmd.Process.Kill()
+			if err != nil && !errors.Is(err, os.ErrProcessDone) && !strings.Contains(strings.ToLower(err.Error()), "invalid argument") {
+				errs = append(errs, fmt.Errorf("force kill PID: %d failed: %v", info.Cmd.Process.Pid, err))
+			}
 		}
 	}
 	e.procMu.Unlock()

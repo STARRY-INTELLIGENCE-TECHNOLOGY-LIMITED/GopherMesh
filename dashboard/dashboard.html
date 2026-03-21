@@ -154,7 +154,7 @@
                         <div class="actions">
                             <button class="btn-secondary" onclick="openLogModal('${ep.internalPort}')">日志 (Logs)</button>
                             <button class="btn-secondary" onclick="openConfigModal('${ep.internalPort}')">配置 (Config)</button>
-                            ${isRunning ? `<button class="btn-danger" onclick="killProcess('${ep.internalPort}')">拔管 (Kill)</button>` : ''}
+                            ${isRunning ? `<button class="btn-danger" onclick="killProcess('${ep.internalPort}')">杀死 (Kill)</button>` : ''}
                         </div>
                     `;
                 grid.appendChild(card);
@@ -192,10 +192,23 @@
         }
     }
 
-    // 占位的拔管杀进程接口
-    function killProcess(port) {
+    async function killProcess(port) {
         if (confirm(`【警告】确定要物理斩断内部端口 [${port}] 下的物理进程吗？\n下一次请求到达时，网关会将其重新冷启动。`)) {
-            alert(`等待后端实现：DELETE ${API_BASE}/process/${port}`);
+            try {
+                const res = await fetch(`${API_BASE}/process/${port}`, {
+                    method: 'DELETE'
+                });
+                const json = await res.json();
+
+                if (json.code === 200) {
+                    // kill成功，立刻强制拉取一次状态，你会看到绿色的呼吸灯瞬间熄灭变灰
+                    fetchStatus();
+                } else {
+                    alert("杀死失败: " + json.error);
+                }
+            } catch (e) {
+                alert("网关请求失败: " + e);
+            }
         }
     }
 

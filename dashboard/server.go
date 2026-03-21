@@ -33,6 +33,7 @@ type RouteStatus struct {
 type MeshState interface {
 	GetStatus() map[string]RouteStatus
 	GetLogs(port string) []string // 新增获取日志接口
+	KillProcess(port string) error
 }
 
 // Serve 启动无头控制台的 API 服务
@@ -87,6 +88,41 @@ func Serve(ln net.Listener, state MeshState) error {
 			"code": 200,
 			"port": port,
 			"data": state.GetLogs(port),
+		})
+	})
+
+	mux.HandleFunc("/api/process/", func(w http.ResponseWriter, r *http.Request) {
+		// 放行浏览器的预检请求 (Preflight)
+		if r.Method == http.MethodOptions {
+			setHeaders(w)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		if r.Method != http.MethodDelete {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		port := strings.TrimPrefix(r.URL.Path, "/api/process/")
+		if port == "" {
+			http.Error(w, "Missing port parameter", http.StatusBadRequest)
+			return
+		}
+
+		setHeaders(w)
+		if err := state.KillProcess(port); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code":  500,
+				"error": err.Error(),
+			})
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 200,
+			"msg":  "Process killed successfully",
 		})
 	})
 
