@@ -13,6 +13,35 @@
 
 ---
 
+## 安装与包结构 (Install & Packages)
+
+CLI 安装：
+
+```bash
+go install github.com/SUTFutureCoder/gophermesh@latest
+```
+
+SDK 导入：
+
+```bash
+go get github.com/SUTFutureCoder/gophermesh/sdk
+```
+
+```go
+import mesh "github.com/SUTFutureCoder/gophermesh/sdk"
+```
+
+常用入口：
+
+- `github.com/SUTFutureCoder/gophermesh`：命令行程序，默认读取 `config.json`
+- `github.com/SUTFutureCoder/gophermesh/sdk`：可嵌入的 Go SDK
+- `github.com/SUTFutureCoder/gophermesh/sample/...`：HTTP/TCP 样例服务
+
+如果你只是要接入本地服务，优先使用 CLI + `config.json`。
+如果你要在自己的 Go 程序里自定义启动流程，再使用 `sdk`。
+
+---
+
 ## 核心特性 (Key Features)
 
 * **⚡ 缩容至零 (Scale-to-Zero):** 采用按请求/连接触发的冷启动（Cold Start）逻辑。后台业务进程在无流量时不占任何内存，只有被选中的后端才会在请求真正到达时被拉起。
@@ -107,6 +136,12 @@ sequenceDiagram
 go run . -config config.json
 ```
 
+或者直接安装后运行：
+
+```bash
+gophermesh -config config.json
+```
+
 开箱即用逻辑：
 
 - 默认启动参数就是 `-config config.json`，因此你可以直接随发布包预置一份 `config.json`
@@ -122,6 +157,12 @@ go run . -config config.json
 
 ```bash
 go run . -config sample/sample_config.json
+```
+
+如果已通过 `go install` 安装：
+
+```bash
+gophermesh -config sample/sample_config.json
 ```
 
 启动后可打开 Dashboard：
@@ -157,6 +198,12 @@ Windows PowerShell：
 ```powershell
 go build -o gophermesh.exe .
 .\gophermesh.exe -config sample/sample_config.json
+```
+
+或者安装后直接运行：
+
+```powershell
+gophermesh -config sample/sample_config.json
 ```
 
 如果要让局域网设备访问 Dashboard：
@@ -199,6 +246,52 @@ $tcp.Close()
 - `18082`：L7 HTTP `ip_hash`
 - `17081`：L4 TCP Echo
 - `17082`：L4 TCP Uppercase
+
+### 5. SDK 最小示例
+
+如果你需要把 GopherMesh 引擎嵌入自己的 Go 程序，可以使用 `sdk`：
+
+```go
+package main
+
+import (
+  "context"
+  "log"
+  "os"
+  "os/signal"
+  "syscall"
+  "time"
+
+  mesh "github.com/SUTFutureCoder/gophermesh/sdk"
+)
+
+func main() {
+  cfg, err := mesh.LoadConfig("config.json")
+  if err != nil {
+    log.Fatal(err)
+  }
+  cfg.ConfigPath = "config.json"
+
+  engine, err := mesh.NewEngine(cfg)
+  if err != nil {
+    log.Fatal(err)
+  }
+
+  ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+  defer cancel()
+
+  if err := engine.Run(ctx); err != nil {
+    log.Printf("engine stopped: %v", err)
+  }
+
+  shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+  defer shutdownCancel()
+
+  if err := engine.Shutdown(shutdownCtx); err != nil {
+    log.Fatal(err)
+  }
+}
+```
 
 ---
 
