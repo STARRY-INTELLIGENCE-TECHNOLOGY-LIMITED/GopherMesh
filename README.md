@@ -2,7 +2,7 @@
 
 > **Burrowing through the Sandbox: A Lightweight Local/Edge Mesh Gateway and Process Orchestrator for HTTP/TCP Services.**
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/SUTFutureCoder/gophermesh)](https://goreportcard.com/report/github.com/xingchen/gophermesh)
+[![Go Report Card](https://goreportcard.com/badge/github.com/SUTFutureCoder/gophermesh)](https://goreportcard.com/report/github.com/SUTFutureCoder/gophermesh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **GopherMesh** 是一套轻量、跨平台的本地/边缘/服务器侧 Mesh 接入与进程编排框架。它旨在打通浏览器、桌面前端、上层业务系统与本机/近端服务之间的调用链，为现代应用提供稳定的本地入口、自动化进程拉起与统一路由能力。
