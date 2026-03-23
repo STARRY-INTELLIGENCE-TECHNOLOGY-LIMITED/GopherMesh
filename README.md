@@ -370,7 +370,7 @@ func main() {
 ![sample_dashboard](https://github.com/SUTFutureCoder/GopherMesh/blob/main/.sample_pictures/sample_dashboard.png?raw=true)
 
 ### 浏览器-本机高性能边缘计算
-![sample_sdk](https://github.com/SUTFutureCoder/QuantAda/blob/main/.sample_pictures/sample_sdk.png?raw=true)
+![sample_sdk](https://github.com/SUTFutureCoder/GopherMesh/blob/main/.sample_pictures/sample_sdk.png?raw=true)
 
 ### 浏览器协议拉起
 ![call_by_protocol](https://github.com/SUTFutureCoder/GopherMesh/blob/main/.sample_pictures/call_by_protocol.png?raw=true)
