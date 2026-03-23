@@ -11,6 +11,8 @@
 
 相较于传统只负责反向代理的组件，**GopherMesh** 更强调“预置配置即开箱可用”“按请求冷启动本地进程”“HTTP/TCP 双协议接入”“可视化热重载管理”。因此它不仅适合桌面环境，也适合单机部署、边缘节点和轻量服务器场景。它的定位不是单纯的 proxy，而是一个轻量级的 `mesh gateway + process orchestrator`。
 
+![diagram](https://github.com/SUTFutureCoder/GopherMesh/blob/main/.sample_pictures/diagram.png?raw=true)
+
 ## 适用场景 (Use Cases)
 
 - 浏览器前端或桌面前端需要调用本地高性能服务
@@ -359,6 +361,22 @@ func main() {
 很多实际系统都会遇到同一个问题：前端需要一个稳定、简单、跨平台的本地入口，但真正的业务能力往往运行在另一个独立进程里。现有方案要么过于沉重（整套桌面壳），要么接入复杂（浏览器扩展、Native Messaging、自定义桥接层）。
 
 **GopherMesh** 追求的是一种更通用的平衡：**底层足够硬核，表层足够轻盈，分发尽可能简单。** 你可以把它理解为一个专门面向“本地服务接入、进程编排、桌面自举、HTTP/TCP 统一入口”的通用基础框架。
+
+---
+
+## 样例截图
+
+### 控制台
+![sample_dashboard](https://github.com/SUTFutureCoder/GopherMesh/blob/main/.sample_pictures/sample_dashboard.png?raw=true)
+
+### 浏览器-本机高性能边缘计算
+![sample_sdk](https://github.com/SUTFutureCoder/QuantAda/blob/main/.sample_pictures/sample_sdk.png?raw=true)
+
+### 浏览器协议拉起
+![call_by_protocol](https://github.com/SUTFutureCoder/GopherMesh/blob/main/.sample_pictures/call_by_protocol.png?raw=true)
+
+### 协议自动写入注册表
+![protocol_regedit](https://github.com/SUTFutureCoder/GopherMesh/blob/main/.sample_pictures/protocol_regedit.png?raw=true)
 
 
 ---
