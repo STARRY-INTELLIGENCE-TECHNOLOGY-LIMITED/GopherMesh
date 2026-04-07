@@ -27,6 +27,7 @@ func (s *stubMeshState) GetStatus() map[string]RouteStatus {
 			LoadBalance: "round_robin",
 			Backends: []BackendStatus{
 				{
+					Ref:          "8081:0",
 					Name:         "sample-a",
 					InternalPort: "9081",
 					Status:       "Running",
@@ -34,6 +35,7 @@ func (s *stubMeshState) GetStatus() map[string]RouteStatus {
 					Uptime:       "3s",
 				},
 				{
+					Ref:          "8081:1",
 					Name:         "sample-b",
 					InternalPort: "9082",
 					Status:       "Dormant",
@@ -129,26 +131,26 @@ func TestServeStatusAndLogsAPI(t *testing.T) {
 		t.Fatalf("status payload backend len = %d, want %d", len(route.Backends), 2)
 	}
 
-	logsResp, err := http.Get(baseURL + "/api/logs/9081")
+	logsResp, err := http.Get(baseURL + "/api/logs/8081:0")
 	if err != nil {
-		t.Fatalf("GET /api/logs/9081 error = %v", err)
+		t.Fatalf("GET /api/logs/8081:0 error = %v", err)
 	}
 	defer logsResp.Body.Close()
 
 	if logsResp.StatusCode != http.StatusOK {
-		t.Fatalf("/api/logs/9081 status = %d, want %d", logsResp.StatusCode, http.StatusOK)
+		t.Fatalf("/api/logs/8081:0 status = %d, want %d", logsResp.StatusCode, http.StatusOK)
 	}
 
 	var logsPayload struct {
 		Code int      `json:"code"`
-		Port string   `json:"port"`
+		Ref  string   `json:"ref"`
 		Data []string `json:"data"`
 	}
 	if err := json.NewDecoder(logsResp.Body).Decode(&logsPayload); err != nil {
 		t.Fatalf("decode logs payload error = %v", err)
 	}
-	if logsPayload.Port != "9081" {
-		t.Fatalf("logs payload port = %q, want %q", logsPayload.Port, "9081")
+	if logsPayload.Ref != "8081:0" {
+		t.Fatalf("logs payload ref = %q, want %q", logsPayload.Ref, "8081:0")
 	}
 	if len(logsPayload.Data) != 2 {
 		t.Fatalf("logs payload data len = %d, want %d", len(logsPayload.Data), 2)
@@ -317,6 +319,12 @@ func TestServeRootContainsLoadBalanceSelectorAndRefreshHook(t *testing.T) {
 	if !strings.Contains(html, `id="f_loadBalance"`) {
 		t.Fatalf("dashboard html missing load balance selector")
 	}
+	if !strings.Contains(html, `<option value="stdio">STDIO</option>`) {
+		t.Fatalf("dashboard html missing stdio protocol option")
+	}
+	if !strings.Contains(html, `id="f_stdioMode"`) {
+		t.Fatalf("dashboard html missing stdio mode selector")
+	}
 	if !strings.Contains(html, `<option value="least_conn">least_conn</option>`) {
 		t.Fatalf("dashboard html missing least_conn option")
 	}
@@ -338,10 +346,28 @@ func TestServeRootContainsLoadBalanceSelectorAndRefreshHook(t *testing.T) {
 	if !strings.Contains(html, `id="deleteBackendBtn"`) || !strings.Contains(html, `删除 (Delete)`) {
 		t.Fatalf("dashboard html missing delete backend button")
 	}
-	if !strings.Contains(html, `function removeBackendFromConfig(config, internalPort)`) || !strings.Contains(html, `delete config[port];`) {
+	if !strings.Contains(html, `function removeBackendFromConfig(config, publicPort, backendIndex)`) || !strings.Contains(html, `delete config[publicPort];`) {
 		t.Fatalf("dashboard html missing backend removal helper")
 	}
 	if !strings.Contains(html, `const canKill = isRunning && Number(ep.pid) > 0;`) {
 		t.Fatalf("dashboard html should only show kill button for managed running backends")
+	}
+	if !strings.Contains(html, `function updateProtocolFormState()`) || !strings.Contains(html, `protocol === 'stdio'`) {
+		t.Fatalf("dashboard html missing stdio-aware protocol form toggle")
+	}
+	if !strings.Contains(html, `route.stdioMode || 'stream'`) || !strings.Contains(html, `route.stdio_mode || 'stream'`) {
+		t.Fatalf("dashboard html missing stdio mode defaults for status and config")
+	}
+	if !strings.Contains(html, `document.getElementById('f_stdioMode').addEventListener('change', updateProtocolFormState)`) {
+		t.Fatalf("dashboard html missing stdio mode change hook")
+	}
+	if !strings.Contains(html, `openLogModal(${JSON.stringify(backendRef)}, ${JSON.stringify(ep.name)})`) {
+		t.Fatalf("dashboard html missing backend-ref based log action")
+	}
+	if !strings.Contains(html, `openFormModal(${JSON.stringify(publicPort)}, ${backendIndex})`) {
+		t.Fatalf("dashboard html missing public-port plus index config action")
+	}
+	if !strings.Contains(html, `encodeURIComponent(currentLogRef)`) || !strings.Contains(html, `encodeURIComponent(ref)`) {
+		t.Fatalf("dashboard html missing encoded backend ref API calls")
 	}
 }

@@ -9,7 +9,7 @@
 
 与其说它是一个工具，不如说它是一个 **“白嫖用户算力的善意特洛伊木马”** ：它静默驻留在底层，仅在网页、桌面端或上层业务需要调用本地/近端能力时，才按需唤醒并透明转发流量，例如 Go/Python/C++ 服务、本地 AI 推理、数据处理、硬件通信、自动化脚本或内部 TCP 服务。
 
-相较于传统只负责反向代理的组件，**GopherMesh** 更强调“预置配置即开箱可用”“按请求冷启动本地进程”“HTTP/TCP 双协议接入”“可视化热重载管理”。因此它不仅适合桌面环境，也适合单机部署、边缘节点和轻量服务器场景。它的定位不是单纯的 proxy，而是一个轻量级的 `mesh gateway + process orchestrator`。
+相较于传统只负责反向代理的组件，**GopherMesh** 更强调“预置配置即开箱可用”“按请求冷启动本地进程”“HTTP/TCP 接入 + STDIO 请求驱动桥接”“可视化热重载管理”。因此它不仅适合桌面环境，也适合单机部署、边缘节点、轻量服务器以及更接近 Serverless / FaaS 的沙箱场景。它的定位不是单纯的 proxy，而是一个轻量级的 `mesh gateway + process orchestrator`。
 
 ![diagram](https://github.com/SUTFutureCoder/GopherMesh/blob/main/.sample_pictures/diagram.png?raw=true)
 
@@ -17,9 +17,10 @@
 
 - 浏览器前端或桌面前端需要调用本地高性能服务
 - AI Agent / Copilot / Web UI 需要稳定访问本机 CLI、模型服务或算法服务
-- 将独立的 Go / Python / C++ 进程统一暴露为固定 HTTP/TCP 入口
+- 将独立的 Go / Python / C++ 进程统一暴露为固定 HTTP/TCP 入口，或桥接为无内部监听端口的 STDIO Worker
 - 本地工具、科研计算、数据处理、图像音频处理等任务需要按需拉起
 - 硬件串口、局域网设备、本地守护进程或内网服务需要被统一编排与转发
+- 轻量级沙箱、CLI Worker、单次任务型程序需要按连接 / 按请求拉起并在结束后自动回收
 
 ---
 
@@ -86,8 +87,9 @@ import mesh "github.com/SUTFutureCoder/gophermesh/sdk"
 
 * **⚡ 缩容至零 (Scale-to-Zero):** 采用按请求/连接触发的冷启动（Cold Start）逻辑。后台业务进程在无流量时不占任何内存，只有被选中的后端才会在请求真正到达时被拉起。
 * **🔀 路由级负载均衡 (Route + []Backend):** 一个对外端口可挂载多个后端实例，当前内置 `round_robin`、`least_conn`、`ip_hash` 三种策略，对齐 Nginx 常见 upstream 选路方式。
-* **🌐 L7 HTTP / L4 TCP 双栈代理:** 默认提供 L7 HTTP 透明反向代理，也支持通过 `protocol: "tcp"` 开启 L4 TCP 字节流透传。
-* **🖥️ Dashboard 可视化热重载:** 内置 Web Dashboard，可直接查看状态、日志、编辑 JSON、通过下拉框切换 `load_balance`、修改/删除子节点，并在更新成功后自动重新拉取最新配置。
+* **🌐 L7 HTTP / L4 TCP / Request-Driven STDIO:** 默认提供 L7 HTTP 透明反向代理，也支持通过 `protocol: "tcp"` 开启 L4 TCP 字节流透传，或通过 `protocol: "stdio"` 将单次请求/连接桥接到子进程 `stdin/stdout`。
+* **🪶 面向轻量沙箱的无端口模式:** `stdio` 路由不要求 `internal_host` / `internal_port`；其中 `stdio_mode: "stream"` 保留原始字节流桥接，`stdio_mode: "http"` 则提供浏览器友好的 HTTP-over-STDIO 适配。两者都会在流量结束后自动 `Wait()` 回收，适合 FaaS、CLI Worker 与受限沙箱。
+* **🖥️ Dashboard 可视化热重载:** 内置 Web Dashboard，可直接查看状态、日志、编辑 JSON、通过下拉框切换 `load_balance`、修改/删除子节点，并在更新成功后自动重新拉取最新配置；`stdio` 后端会以 `Request-Driven` 状态展示，不暴露常驻 PID / Kill 按钮。
 * **🛡️ 浏览器原生界面 / 无头兼容:** 摒弃臃肿的 CGO 或 GUI 库。在桌面环境可自动尝试唤起系统默认浏览器；在无头服务器环境下即使无法弹出浏览器也不会影响主流程运行。
 * **🔌 依赖倒置架构 (Dependency Inversion):** 既可以作为独立守护进程运行，也可以作为 `Go SDK` 被反向编译进业务代码中。
 * **📦 零依赖分发 (Zero-CGO & Static):** 纯 Go 实现，无 CGO 依赖，支持 Windows/macOS/Linux 一键跨平台静态编译，单个二进制文件分发。
@@ -116,6 +118,12 @@ sequenceDiagram
     Backend-->>Browser: 返回计算结果
 
 ```
+
+对于 `protocol: "stdio"` 的路由，数据面略有不同：GopherMesh 不再等待内部监听端口，而是为每条连接/请求动态拉起一个子进程，直接把入口流量桥接到子进程的 `stdin/stdout`，在流量结束后自动退出并回收。推荐显式声明 `stdio_mode`：
+
+- `stream`：保留原始 L4 字节流语义，适合 TCP/CLI Worker。
+- `http`：将入站请求按 HTTP 解析，把请求报文写入子进程 `stdin`，并把 `stdout` 以 chunked HTTP 持续回写给浏览器或 `curl -N`。
+- `auto`：保留首包启发式兼容模式，但可能误判或破坏 server-speaks-first 协议，不推荐作为默认配置。
 
 ---
 
@@ -166,8 +174,31 @@ sequenceDiagram
 - `routes` 的 key 是对外暴露端口。
 - 每个 `route` 可以挂多个 `backends`，默认使用 `round_robin`。
 - `load_balance` 当前支持 `round_robin`、`least_conn`、`ip_hash`。
-- 默认协议为 HTTP；若要启用 L4 透传，可设置 `protocol: "tcp"`。
+- 默认协议为 HTTP；若要启用 L4 透传，可设置 `protocol: "tcp"`；若要启用按请求 `stdin/stdout` 桥接，可设置 `protocol: "stdio"`。
+- 当 `protocol: "stdio"` 时，backend 不需要 `internal_host` 和 `internal_port`；此时子进程会在每次请求/连接到达时拉起，并在处理结束后自动销毁。
+- `stdio_mode` 仅对 `protocol: "stdio"` 生效，支持 `stream`、`http`、`auto`；默认值为 `stream`。
 - 冷启动仍然是 serverless 风格，但粒度已经下沉到“本次请求选中的 backend”。
+
+例如，一个最小的 `stdio` route 可以写成：
+
+```json
+{
+  "routes": {
+    "17083": {
+      "name": "Sample-L4-STDIO-Echo",
+      "protocol": "stdio",
+      "stdio_mode": "stream",
+      "backends": [
+        {
+          "name": "stdio-echo-a",
+          "cmd": "go",
+          "args": ["run", "./sample/stdio/echo", "-name", "stdio-echo-a"]
+        }
+      ]
+    }
+  }
+}
+```
 
 ### 2. 启动主进程
 
@@ -214,10 +245,12 @@ gophermesh -config sample/sample_config.json
 ### 3. Dashboard 能做什么
 
 - 查看每个 route/backend 的运行状态、PID、Uptime 与最近日志
-- 对托管的本地进程执行 `杀死 (Kill)`；远程纯代理 backend 不提供此按钮
-- 在表单里新增/编辑子节点，并同步修改父级 route 的 `protocol` / `load_balance`
+- 对托管的本地进程执行 `杀死 (Kill)`；远程纯代理 backend 与 `stdio` request-driven backend 不提供此按钮
+- 在表单里新增/编辑子节点，并同步修改父级 route 的 `protocol` / `load_balance` / `stdio_mode`
+- 在表单中切换到 `protocol: "stdio"` 时，自动隐藏 `Target Host / Port` 字段，并按 `stream` / `http` / `auto` 写入请求驱动配置
 - 直接删除子节点；如果某个 route 的子节点删空，则自动清理该 route 对象
 - 通过 JSON 面板整体热重载；成功后界面会自动重新拉取最新配置
+- 对 `stdio` backend 使用稳定的 backend ref 读取日志，因此即使它没有 `internal_port` 也能在 Dashboard 中查看最近输出
 
 ### 4. 运行命令与样例
 
@@ -259,6 +292,7 @@ HTTP 样例：
 curl "http://127.0.0.1:18081/healthz"
 curl "http://127.0.0.1:18082/sum?a=3&b=4"
 curl -H "Origin: https://example.com" "http://127.0.0.1:18082/headers"
+curl -N "http://127.0.0.1:17084/"
 ```
 
 TCP 样例：
@@ -266,6 +300,7 @@ TCP 样例：
 ```bash
 echo hello | nc 127.0.0.1 17081
 printf "hello\nworld\n" | nc 127.0.0.1 17082
+echo hello-stdio | nc 127.0.0.1 17083
 ```
 
 Windows PowerShell TCP 样例：
@@ -279,7 +314,28 @@ $tcp.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
 $reader = New-Object System.IO.StreamReader($stream)
 $reader.ReadToEnd()
 $tcp.Close()
+
+$tcp = [System.Net.Sockets.TcpClient]::new("127.0.0.1", 17083)
+$stream = $tcp.GetStream()
+$data = [System.Text.Encoding]::UTF8.GetBytes("hello-stdio")
+$stream.Write($data, 0, $data.Length)
+$tcp.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+$reader = New-Object System.IO.StreamReader($stream)
+$reader.ReadToEnd()
+$tcp.Close()
 ```
+
+Windows PowerShell / CMD 下测试浏览器兼容的 HTTP -> STDIO 持续回写：
+
+```powershell
+curl.exe -N http://127.0.0.1:17084/
+curl.exe -N -X POST http://127.0.0.1:17084/ -H "Content-Type: text/plain" --data-binary "hello from windows"
+```
+
+说明：
+
+- `17083` 现在是显式 `stdio_mode: "stream"`，用于验证原始 TCP -> STDIO 路径；像 `io.ReadAll(os.Stdin)` 这类 Worker 需要客户端在写入后调用 `Shutdown(Send)` 主动发送 EOF。
+- `17084` 是显式 `stdio_mode: "http"`，GopherMesh 会把完整 HTTP 请求写入子进程 `stdin`，并把子进程 `stdout` 以 chunked 方式持续回写给浏览器或 `curl.exe -N`。
 
 以上命令分别对应：
 
@@ -287,6 +343,8 @@ $tcp.Close()
 - `18082`：L7 HTTP `ip_hash`
 - `17081`：L4 TCP Echo
 - `17082`：L4 TCP Uppercase
+- `17083`：STDIO Echo，显式 `stream` 模式
+- `17084`：STDIO Echo，显式 `http` 模式，可直接用浏览器 / `curl.exe -N` 验证 HTTP-over-STDIO 持续回写
 
 ### 5. Release 样例
 

@@ -227,6 +227,87 @@ func TestConfigNormalizeKeepsSupportedLoadBalanceStrategies(t *testing.T) {
 	}
 }
 
+func TestConfigNormalizeAllowsSTDIOBackendsWithoutInternalAddress(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := (Config{
+		Routes: map[string]RouteConfig{
+			"17083": {
+				Name:     "STDIO Echo",
+				Protocol: " STDIO ",
+				Backends: []BackendConfig{
+					{
+						Cmd:  " go ",
+						Args: []string{"run", "./sample/stdio/echo"},
+					},
+				},
+			},
+		},
+	}).Normalize()
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+
+	route := cfg.Routes["17083"]
+	if route.Protocol != protocolSTDIO {
+		t.Fatalf("route protocol = %q, want %q", route.Protocol, protocolSTDIO)
+	}
+	if route.StdioMode != stdioModeStream {
+		t.Fatalf("route stdio mode = %q, want %q", route.StdioMode, stdioModeStream)
+	}
+	if got := route.Backends[0].InternalHost; got != "" {
+		t.Fatalf("stdio backend InternalHost = %q, want blank", got)
+	}
+	if got := route.Backends[0].InternalPort; got != "" {
+		t.Fatalf("stdio backend InternalPort = %q, want blank", got)
+	}
+}
+
+func TestConfigNormalizeRejectsSTDIOBackendWithoutCommand(t *testing.T) {
+	t.Parallel()
+
+	_, err := (Config{
+		Routes: map[string]RouteConfig{
+			"17083": {
+				Name:     "Broken STDIO",
+				Protocol: protocolSTDIO,
+				Backends: []BackendConfig{
+					{},
+				},
+			},
+		},
+	}).Normalize()
+	if err == nil {
+		t.Fatalf("Normalize() error = nil, want missing cmd error for stdio backend")
+	}
+}
+
+func TestConfigNormalizeKeepsExplicitSTDIOHTTPMode(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := (Config{
+		Routes: map[string]RouteConfig{
+			"17084": {
+				Name:      "STDIO HTTP",
+				Protocol:  protocolSTDIO,
+				StdioMode: " HTTP ",
+				Backends: []BackendConfig{
+					{
+						Cmd: "go",
+					},
+				},
+			},
+		},
+	}).Normalize()
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+
+	if got := cfg.Routes["17084"].StdioMode; got != stdioModeHTTP {
+		t.Fatalf("route stdio mode = %q, want %q", got, stdioModeHTTP)
+	}
+}
+
 func TestConfigNormalizeRejectsBlankPort(t *testing.T) {
 	t.Parallel()
 
@@ -289,13 +370,25 @@ func TestSampleConfigParsesAsRoutesAndBackends(t *testing.T) {
 		t.Fatalf("LoadConfig(sample_config.json) error = %v", err)
 	}
 
-	if len(cfg.Routes) != 5 {
-		t.Fatalf("sample routes len = %d, want %d", len(cfg.Routes), 5)
+	if len(cfg.Routes) != 7 {
+		t.Fatalf("sample routes len = %d, want %d", len(cfg.Routes), 7)
 	}
 	if got := len(cfg.Routes["18081"].Backends); got != 2 {
 		t.Fatalf("sample route 18081 backends len = %d, want %d", got, 2)
 	}
 	if got := cfg.Routes["17081"].Protocol; got != "tcp" {
 		t.Fatalf("sample route 17081 protocol = %q, want %q", got, "tcp")
+	}
+	if got := cfg.Routes["17083"].Protocol; got != protocolSTDIO {
+		t.Fatalf("sample route 17083 protocol = %q, want %q", got, protocolSTDIO)
+	}
+	if got := cfg.Routes["17083"].StdioMode; got != stdioModeStream {
+		t.Fatalf("sample route 17083 stdio mode = %q, want %q", got, stdioModeStream)
+	}
+	if got := cfg.Routes["17083"].Backends[0].InternalPort; got != "" {
+		t.Fatalf("sample route 17083 internal port = %q, want blank", got)
+	}
+	if got := cfg.Routes["17084"].StdioMode; got != stdioModeHTTP {
+		t.Fatalf("sample route 17084 stdio mode = %q, want %q", got, stdioModeHTTP)
 	}
 }

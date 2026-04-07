@@ -108,15 +108,20 @@ func NewEngineWithOptions(cfg Config, opts EngineOptions) (MeshEngine, error) {
 	}, nil
 }
 
-func (e *Engine) GetLogs(port string) []string {
-	e.procMu.Lock()
-	logBuf, exists := e.logBufs[port]
-	e.procMu.Unlock()
+func (e *Engine) GetLogs(ref string) []string {
+	lookupKeys := e.logLookupKeys(ref)
 
-	if !exists {
-		return []string{"[GopherMesh] No logs available or process not spawned yet."}
+	e.procMu.Lock()
+	defer e.procMu.Unlock()
+
+	for _, key := range lookupKeys {
+		logBuf, exists := e.logBufs[key]
+		if exists {
+			return logBuf.Lines()
+		}
 	}
-	return logBuf.Lines()
+
+	return []string{"[GopherMesh] No logs available or process not spawned yet."}
 }
 
 // Role 返回当前实例运行的身份
@@ -191,10 +196,14 @@ func (e *Engine) startRouteRuntime(cfg Config) (*routeRuntime, error) {
 			return nil, fmt.Errorf("error listening on %s: %w", addr, err)
 		}
 
-		if routeCfg.Protocol == "tcp" {
+		if routeUsesRawTCPListener(routeCfg) {
 			runtimeState.tcpListeners = append(runtimeState.tcpListeners, listener)
 			go e.serveTCP(listener, state)
-			log.Printf("[Engine] start L4 TCP listener on %s with %d backend(s)", addr, len(routeCfg.Backends))
+			if routeCfg.Protocol == protocolSTDIO {
+				log.Printf("[Engine] start L4 STDIO listener on %s with %d backend(s)", addr, len(routeCfg.Backends))
+			} else {
+				log.Printf("[Engine] start L4 TCP listener on %s with %d backend(s)", addr, len(routeCfg.Backends))
+			}
 			continue
 		}
 
@@ -317,26 +326,32 @@ func (e *Engine) GetStatus() map[string]dashboard.RouteStatus {
 		status := dashboard.RouteStatus{
 			Name:        route.Name,
 			Protocol:    route.Protocol,
+			StdioMode:   route.StdioMode,
 			LoadBalance: route.LoadBalance,
 			Backends:    make([]dashboard.BackendStatus, 0, len(route.Backends)),
 		}
 
-		for _, backend := range route.Backends {
+		for index, backend := range route.Backends {
 			backendStatus := dashboard.BackendStatus{
+				Ref:          makeBackendRef(port, index),
 				Name:         backend.Name,
 				InternalHost: backend.InternalHost,
 				InternalPort: backend.InternalPort,
 				Status:       "Dormant",
 			}
 
-			targetAddr := net.JoinHostPort(backend.InternalHost, backend.InternalPort)
+			if route.Protocol == protocolSTDIO {
+				backendStatus.Status = "Request-Driven"
+			} else {
+				targetAddr := net.JoinHostPort(backend.InternalHost, backend.InternalPort)
 
-			if info, exists := processes[backend.InternalPort]; exists && info.Cmd.Process != nil {
-				backendStatus.Status = "Running"
-				backendStatus.PID = info.Cmd.Process.Pid
-				backendStatus.Uptime = time.Since(info.StartTime).Round(time.Second).String()
-			} else if e.isReady(targetAddr) {
-				backendStatus.Status = "Running"
+				if info, exists := processes[backend.InternalPort]; exists && info.Cmd.Process != nil {
+					backendStatus.Status = "Running"
+					backendStatus.PID = info.Cmd.Process.Pid
+					backendStatus.Uptime = time.Since(info.StartTime).Round(time.Second).String()
+				} else if e.isReady(targetAddr) {
+					backendStatus.Status = "Running"
+				}
 			}
 
 			status.Backends = append(status.Backends, backendStatus)
@@ -348,24 +363,32 @@ func (e *Engine) GetStatus() map[string]dashboard.RouteStatus {
 }
 
 // KillProcess 实现 dashboard.MeshState 接口，支持手动kill底层进程
-func (e *Engine) KillProcess(port string) error {
+func (e *Engine) KillProcess(ref string) error {
+	processKey := strings.TrimSpace(ref)
+	if _, _, backend, ok := e.resolveBackendRef(ref); ok {
+		if strings.TrimSpace(backend.InternalPort) == "" {
+			return fmt.Errorf("backend %s is request-driven and has no persistent process to kill", ref)
+		}
+		processKey = backend.InternalPort
+	}
+
 	e.procMu.Lock()
-	info, exists := e.process[port]
+	info, exists := e.process[processKey]
 	if !exists {
 		e.procMu.Unlock()
-		return fmt.Errorf("target port %s not found or suspended", port)
+		return fmt.Errorf("target port %s not found or suspended", processKey)
 	}
 
 	if info.Cmd.Process == nil {
 		e.procMu.Unlock()
-		return fmt.Errorf("target port %s process is not initialized", port)
+		return fmt.Errorf("target port %s process is not initialized", processKey)
 	}
 
 	cmd := info.Cmd
 	pid := cmd.Process.Pid
 	e.procMu.Unlock()
 
-	log.Printf("[Dashboard] force kill process PID: %d Port: %s", pid, port)
+	log.Printf("[Dashboard] force kill process PID: %d Port: %s", pid, processKey)
 
 	if err := killManagedCmd(cmd); err != nil {
 		return fmt.Errorf("force kill process failed: %w", err)
@@ -373,8 +396,8 @@ func (e *Engine) KillProcess(port string) error {
 
 	// 立即清理快照，避免 Dashboard 在 Wait goroutine 回收前继续显示旧 PID/Uptime。
 	e.procMu.Lock()
-	if current, exists := e.process[port]; exists && current.Cmd == cmd {
-		delete(e.process, port)
+	if current, exists := e.process[processKey]; exists && current.Cmd == cmd {
+		delete(e.process, processKey)
 	}
 	e.procMu.Unlock()
 
@@ -516,7 +539,9 @@ func (e *Engine) killRemovedProcesses(newCfg Config) {
 	activePorts := make(map[string]struct{})
 	for _, route := range newCfg.Routes {
 		for _, backend := range route.Backends {
-			activePorts[backend.InternalPort] = struct{}{}
+			if strings.TrimSpace(backend.InternalPort) != "" {
+				activePorts[backend.InternalPort] = struct{}{}
+			}
 		}
 	}
 
@@ -535,6 +560,37 @@ func (e *Engine) killRemovedProcesses(newCfg Config) {
 			log.Printf("[Reload] warning: kill abandoned Port %s failed: %v", port, err)
 		}
 	}
+}
+
+func (e *Engine) logLookupKeys(ref string) []string {
+	keys := make([]string, 0, 2)
+	ref = strings.TrimSpace(ref)
+	if ref != "" {
+		keys = append(keys, ref)
+	}
+
+	if _, _, backend, ok := e.resolveBackendRef(ref); ok {
+		if internalPort := strings.TrimSpace(backend.InternalPort); internalPort != "" && internalPort != ref {
+			keys = append(keys, internalPort)
+		}
+	}
+
+	return keys
+}
+
+func (e *Engine) resolveBackendRef(ref string) (string, int, BackendConfig, bool) {
+	publicPort, index, ok := parseBackendRef(ref)
+	if !ok {
+		return "", 0, BackendConfig{}, false
+	}
+
+	cfg := e.configSnapshot()
+	route, exists := cfg.Routes[publicPort]
+	if !exists || index < 0 || index >= len(route.Backends) {
+		return "", 0, BackendConfig{}, false
+	}
+
+	return publicPort, index, route.Backends[index], true
 }
 
 func openBrowser(url string) {

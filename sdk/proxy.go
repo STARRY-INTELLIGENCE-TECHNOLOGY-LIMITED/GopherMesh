@@ -29,6 +29,7 @@ type routeState struct {
 // backendState 维护单个后端进程的冷启动状态机。
 type backendState struct {
 	route *routeState
+	index int
 	cfg   BackendConfig
 
 	startMu      sync.Mutex
@@ -39,6 +40,10 @@ type backendState struct {
 }
 
 func newRouteState(engine *Engine, publicPort string, cfg RouteConfig) *routeState {
+	cfg.Protocol = normalizeProtocol(cfg.Protocol)
+	cfg.StdioMode = normalizeSTDIOBridgeMode(cfg.Protocol, cfg.StdioMode)
+	cfg.LoadBalance = normalizeLoadBalance(cfg.LoadBalance)
+
 	state := &routeState{
 		engine:     engine,
 		publicPort: publicPort,
@@ -48,6 +53,7 @@ func newRouteState(engine *Engine, publicPort string, cfg RouteConfig) *routeSta
 	for _, backend := range cfg.Backends {
 		state.backends = append(state.backends, &backendState{
 			route: state,
+			index: len(state.backends),
 			cfg:   backend,
 		})
 	}
@@ -189,6 +195,10 @@ func extractClientIP(remoteAddr string) string {
 }
 
 func (b *backendState) targetAddress() string {
+	if b.usesSTDIO() {
+		return ""
+	}
+
 	host := strings.TrimSpace(b.cfg.InternalHost)
 	if host == "" {
 		host = defaultLocalHost
@@ -208,7 +218,22 @@ func (b *backendState) activeConnections() int64 {
 	return atomic.LoadInt64(&b.active)
 }
 
+func (b *backendState) usesSTDIO() bool {
+	return b.route != nil && b.route.cfg.Protocol == protocolSTDIO
+}
+
+func (b *backendState) ref() string {
+	if b.route == nil {
+		return ""
+	}
+	return makeBackendRef(b.route.publicPort, b.index)
+}
+
 func (b *backendState) ensureReady(ctx context.Context) error {
+	if b.usesSTDIO() {
+		return errors.New("stdio backends do not expose a persistent dial target")
+	}
+
 	target := b.targetAddress()
 
 	// 目标已就绪
@@ -226,6 +251,10 @@ func (b *backendState) ensureReady(ctx context.Context) error {
 
 // startOnce 保证海量并发请求下，同一个后端进程只会被 spawn 一次。
 func (b *backendState) startOnce(ctx context.Context) error {
+	if b.usesSTDIO() {
+		return errors.New("stdio backends are request-driven and cannot be started as persistent processes")
+	}
+
 	b.startMu.Lock()
 
 	// 场景A：已经有其他 Goroutine 正在拉起后端，当前请求挂起等待

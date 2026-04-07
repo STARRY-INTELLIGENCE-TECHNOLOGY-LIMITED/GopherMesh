@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+type stdioProcess struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	logBuf *LogBuffer
+}
+
 // isReady 执行纯粹的 L4 TCP 端口嗅探，判断下游进程是否已经绑定了端口
 func (e *Engine) isReady(targetAddr string) bool {
 	// 50ms 极速探测
@@ -30,16 +37,7 @@ func (e *Engine) spawnAndWait(ctx context.Context, cfg BackendConfig) error {
 	configureManagedProcess(cmd)
 
 	// 日志劫持逻辑
-	e.procMu.Lock()
-	logBuf, exists := e.logBufs[cfg.InternalPort]
-	if !exists {
-		logBuf = NewLogBuffer(50) // 最多保留 50 行
-		e.logBufs[cfg.InternalPort] = logBuf
-	} else {
-		// 如果冷启动复活，插入一条分割线
-		logBuf.Write([]byte("====== GopherMesh: Process Cold Restarted ======\n"))
-	}
-	e.procMu.Unlock()
+	logBuf := e.getOrCreateLogBuffer(cfg.InternalPort, "====== GopherMesh: Process Cold Restarted ======\n")
 
 	// 将子进程的标准输出/错误重定向到主进程，方便崩溃排查
 	cmd.Stdout = io.MultiWriter(os.Stdout, logBuf)
@@ -117,4 +115,68 @@ func (e *Engine) waitForPort(ctx context.Context, targetAddr string, cmd *exec.C
 			}
 		}
 	}
+}
+
+// spawnForSTDIO 拉起单次请求生命周期的子进程，并直接暴露 stdin/stdout 数据面。
+// 上层可在此基础上实现原始 L4 字节流透传，或将 HTTP 请求适配后再桥接到 stdio。
+func (e *Engine) spawnForSTDIO(logKey string, cfg BackendConfig, extraEnv []string) (*stdioProcess, error) {
+	cmd := exec.Command(cfg.Cmd, cfg.Args...)
+	configureManagedProcess(cmd)
+
+	var logBuf *LogBuffer
+	if strings.TrimSpace(logKey) != "" {
+		logBuf = e.getOrCreateLogBuffer(logKey, "====== GopherMesh: Request-Driven Child Spawned ======\n")
+		cmd.Stderr = io.MultiWriter(os.Stderr, logBuf)
+	} else {
+		cmd.Stderr = os.Stderr
+	}
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("create stdin pipe for %s failed: %w", cfg.Cmd, err)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, fmt.Errorf("create stdout pipe for %s failed: %w", cfg.Cmd, err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, fmt.Errorf("start stdio cmd failed [%s]: %w", cfg.Cmd, err)
+	}
+	if err := registerManagedProcess(cmd); err != nil {
+		log.Printf("[Warden] warning: register PID %d to managed process group failed: %v", cmd.Process.Pid, err)
+	}
+
+	log.Printf("[Warden] spawned stdio cmd: %s (PID: %d)", cfg.Cmd, cmd.Process.Pid)
+
+	return &stdioProcess{
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: stdout,
+		logBuf: logBuf,
+	}, nil
+}
+
+func (e *Engine) getOrCreateLogBuffer(key, divider string) *LogBuffer {
+	e.procMu.Lock()
+	defer e.procMu.Unlock()
+
+	logBuf, exists := e.logBufs[key]
+	if !exists {
+		logBuf = NewLogBuffer(50)
+		e.logBufs[key] = logBuf
+		return logBuf
+	}
+
+	if divider != "" {
+		_, _ = logBuf.Write([]byte(divider))
+	}
+	return logBuf
 }

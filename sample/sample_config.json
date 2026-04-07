@@ -75,6 +75,62 @@
         }
       ]
     },
+    "17083": {
+      "name": "Sample-L4-STDIO-Echo",
+      "protocol": "stdio",
+      "stdio_mode": "stream",
+      "load_balance": "round_robin",
+      "backends": [
+        {
+          "name": "stdio-echo-a",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/stdio/echo",
+            "-name",
+            "stdio-echo-a"
+          ]
+        },
+        {
+          "name": "stdio-echo-b",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/stdio/echo",
+            "-name",
+            "stdio-echo-b"
+          ]
+        }
+      ]
+    },
+    "17084": {
+      "name": "Sample-L7-STDIO-HTTP",
+      "protocol": "stdio",
+      "stdio_mode": "http",
+      "load_balance": "round_robin",
+      "backends": [
+        {
+          "name": "stdio-http-a",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/stdio/echo",
+            "-name",
+            "stdio-http-a"
+          ]
+        },
+        {
+          "name": "stdio-http-b",
+          "cmd": "go",
+          "args": [
+            "run",
+            "./sample/stdio/echo",
+            "-name",
+            "stdio-http-b"
+          ]
+        }
+      ]
+    },
     "18000": {
       "name": "Internal-Healthcheck",
       "protocol": "http",

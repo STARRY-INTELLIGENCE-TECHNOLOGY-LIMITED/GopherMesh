@@ -14,10 +14,11 @@ var uiTemplate []byte
 
 // BackendStatus 表示单个后端实例的运行时状态
 type BackendStatus struct {
+	Ref          string `json:"ref,omitempty"`
 	Name         string `json:"name"`
 	InternalHost string `json:"internalHost"`
 	InternalPort string `json:"internalPort"`
-	Status       string `json:"status"` // Dormant 休眠 或 Running 运行
+	Status       string `json:"status"` // Dormant 休眠 / Running 运行 / Request-Driven 按请求拉起
 	PID          int    `json:"pid,omitempty"`
 	Uptime       string `json:"uptime,omitempty"`
 }
@@ -26,6 +27,7 @@ type BackendStatus struct {
 type RouteStatus struct {
 	Name        string          `json:"name"`
 	Protocol    string          `json:"protocol"`
+	StdioMode   string          `json:"stdioMode,omitempty"`
 	LoadBalance string          `json:"loadBalance"`
 	Backends    []BackendStatus `json:"backends"`
 }
@@ -33,8 +35,8 @@ type RouteStatus struct {
 // MeshState 控制台向主引擎索取数据的契约
 type MeshState interface {
 	GetStatus() map[string]RouteStatus
-	GetLogs(port string) []string // 新增获取日志接口
-	KillProcess(port string) error
+	GetLogs(ref string) []string // ref 既可为 internalPort，也可为 backendRef
+	KillProcess(ref string) error
 	GetConfigJSON() []byte
 	ReloadConfig(rawJSON []byte) error
 }
@@ -79,18 +81,18 @@ func Serve(ln net.Listener, state MeshState) error {
 			return
 		}
 
-		// 极简路由解析，提取形如 /api/logs/9081 中的 port
-		port := strings.TrimPrefix(r.URL.Path, "/api/logs/")
-		if port == "" {
-			http.Error(w, "Missing port parameter", http.StatusBadRequest)
+		// 极简路由解析，提取形如 /api/logs/9081 或 /api/logs/17083:0 中的 backend ref
+		ref := strings.TrimPrefix(r.URL.Path, "/api/logs/")
+		if ref == "" {
+			http.Error(w, "Missing backend ref parameter", http.StatusBadRequest)
 			return
 		}
 
 		setHeaders(w)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"code": 200,
-			"port": port,
-			"data": state.GetLogs(port),
+			"ref":  ref,
+			"data": state.GetLogs(ref),
 		})
 	})
 
@@ -107,14 +109,14 @@ func Serve(ln net.Listener, state MeshState) error {
 			return
 		}
 
-		port := strings.TrimPrefix(r.URL.Path, "/api/process/")
-		if port == "" {
-			http.Error(w, "Missing port parameter", http.StatusBadRequest)
+		ref := strings.TrimPrefix(r.URL.Path, "/api/process/")
+		if ref == "" {
+			http.Error(w, "Missing backend ref parameter", http.StatusBadRequest)
 			return
 		}
 
 		setHeaders(w)
-		if err := state.KillProcess(port); err != nil {
+		if err := state.KillProcess(ref); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"code":  500,

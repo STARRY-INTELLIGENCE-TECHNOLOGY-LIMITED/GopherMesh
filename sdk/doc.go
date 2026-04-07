@@ -1,8 +1,9 @@
 // Package mesh provides the embeddable GopherMesh engine and launcher helpers
-// used to load config, expose HTTP/TCP routes, cold-start local backends,
-// run the dashboard, and integrate the gophermesh:// desktop bootstrap flow.
-// The launch protocol supports gophermesh://launch with optional port/conf
-// query parameters.
+// used to load config, expose HTTP/TCP routes, bridge request-driven stdio
+// workers in explicit stream/http modes, cold-start local backends, run the
+// dashboard, and integrate the gophermesh:// desktop bootstrap flow. The
+// launch protocol supports
+// gophermesh://launch with optional port/conf query parameters.
 //
 // The recommended integration order is:
 //

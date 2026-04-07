@@ -23,7 +23,8 @@ type Config struct {
 // RouteConfig 定义单个对外暴露端口的路由规则。
 type RouteConfig struct {
 	Name        string          `json:"name"`
-	Protocol    string          `json:"protocol,omitempty"`     // 默认为 http，可配置为 tcp
+	Protocol    string          `json:"protocol,omitempty"`     // 默认为 http，可配置为 tcp / stdio
+	StdioMode   string          `json:"stdio_mode,omitempty"`   // 仅 stdio 路由生效：stream / http / auto
 	LoadBalance string          `json:"load_balance,omitempty"` // 支持 round_robin / least_conn / ip_hash
 	Backends    []BackendConfig `json:"backends,omitempty"`
 }
@@ -34,7 +35,7 @@ type BackendConfig struct {
 	Cmd          string   `json:"cmd"`                     // 执行的二进制目标，为空或"internal"表示内部路由
 	Args         []string `json:"args,omitempty"`          // 启动参数
 	InternalHost string   `json:"internal_host,omitempty"` // 目标主机IP/域名
-	InternalPort string   `json:"internal_port"`           // 目标进程实际监听的本地端口
+	InternalPort string   `json:"internal_port,omitempty"` // 目标进程实际监听的本地端口；stdio 路由下留空
 }
 
 func (c Config) clone() Config {
@@ -79,6 +80,12 @@ const (
 	defaultLoadBalance   = "round_robin"
 	loadBalanceLeastConn = "least_conn"
 	loadBalanceIPHash    = "ip_hash"
+	protocolHTTP         = "http"
+	protocolTCP          = "tcp"
+	protocolSTDIO        = "stdio"
+	stdioModeStream      = "stream"
+	stdioModeHTTP        = "http"
+	stdioModeAuto        = "auto"
 )
 
 func isInternalCommand(cmd string) bool {
@@ -87,6 +94,10 @@ func isInternalCommand(cmd string) bool {
 
 func isInternalRoute(route RouteConfig) bool {
 	return len(route.Backends) == 1 && isInternalCommand(route.Backends[0].Cmd)
+}
+
+func routeUsesRawTCPListener(route RouteConfig) bool {
+	return route.Protocol == protocolTCP || route.Protocol == protocolSTDIO
 }
 
 // DefaultConfig 生成包含防环路机制与默认放行白名单的配置
@@ -214,6 +225,7 @@ func (c Config) Normalize() (Config, error) {
 		}
 
 		route.Protocol = normalizeProtocol(route.Protocol)
+		route.StdioMode = normalizeSTDIOBridgeMode(route.Protocol, route.StdioMode)
 		route.LoadBalance = normalizeLoadBalance(route.LoadBalance)
 
 		if len(route.Backends) == 0 {
@@ -226,6 +238,24 @@ func (c Config) Normalize() (Config, error) {
 		for index, backend := range route.Backends {
 			backend.Name = strings.TrimSpace(backend.Name)
 			backend.Cmd = strings.TrimSpace(backend.Cmd)
+
+			if route.Protocol == protocolSTDIO {
+				if backend.Cmd == "" {
+					return Config{}, fmt.Errorf("route %q backend %d requires cmd for stdio protocol", publicPort, index+1)
+				}
+				if isInternalCommand(backend.Cmd) {
+					return Config{}, fmt.Errorf("route %q backend %d cannot use internal backend with stdio protocol", publicPort, index+1)
+				}
+
+				backend.InternalHost = ""
+				backend.InternalPort = ""
+
+				if backend.Name == "" {
+					backend.Name = fmt.Sprintf("%s-%d", route.Name, index+1)
+				}
+				normalizedBackends = append(normalizedBackends, backend)
+				continue
+			}
 
 			// 如果未配置 Host 默认兜底为本机
 			if strings.TrimSpace(backend.InternalHost) == "" {
@@ -273,10 +303,29 @@ func (c Config) Normalize() (Config, error) {
 
 func normalizeProtocol(protocol string) string {
 	protocol = strings.ToLower(strings.TrimSpace(protocol))
-	if protocol == "tcp" {
-		return "tcp"
+	switch protocol {
+	case protocolTCP:
+		return protocolTCP
+	case protocolSTDIO:
+		return protocolSTDIO
 	}
-	return "http"
+	return protocolHTTP
+}
+
+func normalizeSTDIOBridgeMode(protocol, mode string) string {
+	if normalizeProtocol(protocol) != protocolSTDIO {
+		return ""
+	}
+
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case stdioModeHTTP:
+		return stdioModeHTTP
+	case stdioModeAuto:
+		return stdioModeAuto
+	case "", stdioModeStream:
+		return stdioModeStream
+	}
+	return stdioModeStream
 }
 
 func normalizeLoadBalance(mode string) string {

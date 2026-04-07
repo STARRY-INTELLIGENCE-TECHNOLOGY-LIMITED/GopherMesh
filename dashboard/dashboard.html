@@ -38,6 +38,7 @@
         .status-indicator { position: absolute; top: 20px; right: 20px; display: flex; align-items: center; gap: 8px; font-size: 12px; font-family: monospace; }
         .dot { width: 10px; height: 10px; border-radius: 50%; background-color: var(--text-muted); }
         .dot.running { background-color: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); animation: pulse 2s infinite; }
+        .dot.request-driven { background-color: var(--accent-blue); box-shadow: 0 0 8px rgba(59, 130, 246, 0.85); }
 
         @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); } 70% { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); } 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); } }
 
@@ -133,31 +134,40 @@
         <div class="modal-body">
             <form id="endpointForm" onsubmit="event.preventDefault();">
                 <h4 style="margin-bottom: 12px; border-bottom: 1px solid #374151; padding-bottom: 6px; color: #93c5fd;">入站路由规则 (Route)</h4>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">对外暴露端口 (Public Port) *</label>
-                        <input type="text" id="f_publicPort" class="form-control" placeholder="如: 8080" required>
+	                <div class="form-row">
+	                    <div class="form-group">
+	                        <label class="form-label">对外暴露端口 (Public Port) *</label>
+	                        <input type="text" id="f_publicPort" class="form-control" placeholder="如: 8080" required>
                     </div>
                     <div class="form-group">
                         <label class="form-label">协议 (Protocol)</label>
                         <select id="f_protocol" class="form-control">
                             <option value="http">HTTP</option>
                             <option value="tcp">TCP</option>
+                            <option value="stdio">STDIO</option>
                         </select>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">负载均衡 (Load Balance)</label>
-                        <select id="f_loadBalance" class="form-control">
-                            <option value="round_robin">round_robin</option>
-                            <option value="least_conn">least_conn</option>
-                            <option value="ip_hash">ip_hash</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">路由名称 (Route Name)</label>
-                    <input type="text" id="f_routeName" class="form-control" placeholder="如: Web-API-Route">
-                </div>
+	                    <div class="form-group">
+	                        <label class="form-label">负载均衡 (Load Balance)</label>
+	                        <select id="f_loadBalance" class="form-control">
+	                            <option value="round_robin">round_robin</option>
+	                            <option value="least_conn">least_conn</option>
+	                            <option value="ip_hash">ip_hash</option>
+	                        </select>
+	                    </div>
+	                </div>
+	                <div id="stdioModeGroup" class="form-group" style="display: none;">
+	                    <label class="form-label">STDIO 桥接模式 (STDIO Mode)</label>
+	                    <select id="f_stdioMode" class="form-control">
+	                        <option value="stream">stream</option>
+	                        <option value="http">http</option>
+	                        <option value="auto">auto (legacy)</option>
+	                    </select>
+	                </div>
+	                <div class="form-group">
+	                    <label class="form-label">路由名称 (Route Name)</label>
+	                    <input type="text" id="f_routeName" class="form-control" placeholder="如: Web-API-Route">
+	                </div>
 
                 <h4 style="margin-top: 24px; margin-bottom: 12px; border-bottom: 1px solid #374151; padding-bottom: 6px; color: #fde047;">目标后端节点 (Backend)</h4>
                 <div class="form-group">
@@ -172,13 +182,14 @@
                     <label class="form-label">启动参数 (Args) <span style="color: #6b7280; font-size: 12px; font-weight: normal; margin-left: 8px;">使用空格分隔</span></label>
                     <input type="text" id="f_args" class="form-control" placeholder="如: main.py --port 9090">
                 </div>
-                <div class="form-row">
+	                <div id="protocolHint" style="font-size: 12px; color: #9ca3af; margin-bottom: 15px;">HTTP/TCP 模式会连接到目标主机:端口；STDIO 模式会为每个请求拉起一次子进程，并按配置桥接原始字节流或 HTTP 请求。</div>
+                <div id="targetNetworkFields" class="form-row">
                     <div class="form-group">
                         <label class="form-label">目标主机 (Target Host)</label>
                         <input type="text" id="f_internalHost" class="form-control" value="127.0.0.1">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">目标端口 (Target Port) *</label>
+                        <label id="f_internalPortLabel" class="form-label">目标端口 (Target Port) *</label>
                         <input type="text" id="f_internalPort" class="form-control" placeholder="如: 9090" required>
                     </div>
                 </div>
@@ -189,9 +200,10 @@
 
 <script>
     const API_BASE = '/api';
-    let currentLogPort = null;
+    let currentLogRef = null;
     let globalConfigCache = null; // 用于表单编辑时的数据源缓存
-    let editingInternalPort = null; // 标记当前正在编辑哪个后端的 internalPort
+    let editingPublicPort = null;
+    let editingBackendIndex = null;
 
     /* ================= 基本轮询与渲染 ================= */
     async function fetchStatus() {
@@ -210,45 +222,60 @@
         await fetchStatus();
     }
 
-    function renderGrid(routes) {
-        const grid = document.getElementById('grid');
-        grid.innerHTML = '';
-        for (const [publicPort, route] of Object.entries(routes)) {
-            for (const ep of route.backends) {
-                const isRunning = ep.status === 'Running';
-                const canKill = isRunning && Number(ep.pid) > 0;
+	    function renderGrid(routes) {
+	        const grid = document.getElementById('grid');
+	        grid.innerHTML = '';
+	        for (const [publicPort, route] of Object.entries(routes)) {
+	            route.backends.forEach((ep, backendIndex) => {
+	                const isRunning = ep.status === 'Running';
+	                const isRequestDriven = ep.status === 'Request-Driven';
+	                const stdioMode = route.stdioMode || 'stream';
+	                const canKill = isRunning && Number(ep.pid) > 0;
+	                const backendRef = ep.ref || ep.internalPort;
+	                const targetText = isRequestDriven
+	                    ? `stdio://${stdioMode}`
+	                    : `${ep.internalHost || '127.0.0.1'}:${ep.internalPort}`;
+	                const protocolLabel = route.protocol === 'stdio'
+	                    ? `${route.protocol.toUpperCase()}(${stdioMode})`
+	                    : route.protocol.toUpperCase();
+	                const dotClass = isRunning ? 'running' : (isRequestDriven ? 'request-driven' : '');
+	                const statusColor = isRunning
+	                    ? 'var(--accent-green)'
+	                    : (isRequestDriven ? 'var(--accent-blue)' : 'var(--text-muted)');
+                const pidText = isRequestDriven ? 'per-request' : (ep.pid || '---');
+                const uptimeText = isRequestDriven ? 'ephemeral' : (ep.uptime || '---');
                 const card = document.createElement('div');
                 card.className = 'card';
                 card.innerHTML = `
                     <div class="status-indicator">
-                        <div class="dot ${isRunning ? 'running' : ''}"></div>
-                        <span style="color: ${isRunning ? 'var(--accent-green)' : 'var(--text-muted)'}">${ep.status}</span>
+                        <div class="dot ${dotClass}"></div>
+                        <span style="color: ${statusColor}">${ep.status}</span>
                     </div>
                     <div class="card-route">ROUTE: ${route.name}</div>
                     <div class="card-title" title="${ep.name}">${ep.name}</div>
                     <div class="card-ports">
-                        Ext: <span class="highlight-blue">${publicPort}</span> → Int: <span class="highlight-yellow">${ep.internalHost}:${ep.internalPort}</span>
-                    </div>
-                    <div class="info-row">
-                        <span style="color: var(--text-muted)">Protocol / LB</span>
-                        <span class="info-value">${route.protocol.toUpperCase()} / ${route.loadBalance}</span>
-                    </div>
+                        Ext: <span class="highlight-blue">${publicPort}</span> → Target: <span class="highlight-yellow">${targetText}</span>
+	                    </div>
+	                    <div class="info-row">
+	                        <span style="color: var(--text-muted)">Protocol / LB</span>
+	                        <span class="info-value">${protocolLabel} / ${route.loadBalance}</span>
+	                    </div>
                     <div class="info-row">
                         <span style="color: var(--text-muted)">PID</span>
-                        <span class="info-value">${ep.pid || '---'}</span>
+                        <span class="info-value">${pidText}</span>
                     </div>
                     <div class="info-row">
                         <span style="color: var(--text-muted)">Uptime</span>
-                        <span class="info-value" style="color: ${isRunning ? '#4ade80' : '#d1d5db'}">${ep.uptime || '---'}</span>
+                        <span class="info-value" style="color: ${isRunning ? '#4ade80' : '#d1d5db'}">${uptimeText}</span>
                     </div>
                     <div class="actions">
-                        <button class="btn-secondary" onclick="openLogModal('${ep.internalPort}')">日志 (Logs)</button>
-                        <button class="btn-secondary" onclick="openFormModal('${ep.internalPort}')">配置 (Config)</button>
-                        ${canKill ? `<button class="btn-danger" onclick="killProcess('${ep.internalPort}')">杀死 (Kill)</button>` : ''}
+                        <button class="btn-secondary" onclick='openLogModal(${JSON.stringify(backendRef)}, ${JSON.stringify(ep.name)})'>日志 (Logs)</button>
+                        <button class="btn-secondary" onclick='openFormModal(${JSON.stringify(publicPort)}, ${backendIndex})'>配置 (Config)</button>
+                        ${canKill ? `<button class="btn-danger" onclick='killProcess(${JSON.stringify(backendRef)}, ${JSON.stringify(ep.name)})'>杀死 (Kill)</button>` : ''}
                     </div>
                 `;
                 grid.appendChild(card);
-            }
+            });
         }
     }
 
@@ -285,52 +312,84 @@
     }
 
     /* ================= 功能 1 & 2：可视化表单编辑与新增 ================= */
-    function removeBackendFromConfig(config, internalPort) {
-        for (const [port, route] of Object.entries(config)) {
-            if (route.backends) {
-                route.backends = route.backends.filter(b => b.internal_port !== internalPort);
-            }
-            if (!route.backends || route.backends.length === 0) {
-                delete config[port];
-            }
+    function removeBackendFromConfig(config, publicPort, backendIndex) {
+        const route = config[publicPort];
+        if (!route || !route.backends || backendIndex == null) return;
+
+        route.backends.splice(backendIndex, 1);
+        if (route.backends.length === 0) {
+            delete config[publicPort];
         }
     }
 
-    async function openFormModal(internalPort = null) {
-        editingInternalPort = internalPort;
-        document.getElementById('formModalTitle').innerText = internalPort ? `> 修改目标端点 (Target Port: ${internalPort})` : `> 新增路由 / 端点`;
-        document.getElementById('deleteBackendBtn').style.display = internalPort ? 'inline-block' : 'none';
+	    function updateProtocolFormState() {
+	        const protocol = document.getElementById('f_protocol').value;
+	        const isSTDIO = protocol === 'stdio';
+	        const stdioMode = document.getElementById('f_stdioMode').value;
+	        const networkFields = document.getElementById('targetNetworkFields');
+	        const stdioModeGroup = document.getElementById('stdioModeGroup');
+	        const internalHost = document.getElementById('f_internalHost');
+	        const internalPort = document.getElementById('f_internalPort');
+	        const hint = document.getElementById('protocolHint');
+	
+	        networkFields.style.display = isSTDIO ? 'none' : 'flex';
+	        stdioModeGroup.style.display = isSTDIO ? 'block' : 'none';
+	        internalHost.disabled = isSTDIO;
+	        internalPort.disabled = isSTDIO;
+	        internalPort.required = !isSTDIO;
+	        if (!isSTDIO) {
+	            hint.innerText = 'HTTP/TCP 模式会转发到目标主机:端口；如配置了启动命令，GopherMesh 会先拉起常驻进程并等待端口就绪。';
+	            return;
+	        }
+	        if (stdioMode === 'http') {
+	            hint.innerText = 'STDIO/http 模式会把入站请求解析为 HTTP，请求头注入环境变量，请求报文写入 stdin，并将 stdout 以 chunked HTTP 持续回写；不需要目标主机和端口。';
+	            return;
+	        }
+	        if (stdioMode === 'auto') {
+	            hint.innerText = 'STDIO/auto 会按首包启发式区分 HTTP 与原始流量，适合兼容旧配置，但可能误判或破坏 server-speaks-first 协议。';
+	            return;
+	        }
+	        hint.innerText = 'STDIO/stream 会保留原始字节流桥接语义：连接数据直接写入 stdin，stdout 原样回写；不需要目标主机和端口。';
+	    }
+
+    async function openFormModal(publicPort = '', backendIndex = null) {
+        editingPublicPort = publicPort || null;
+        editingBackendIndex = backendIndex;
+        document.getElementById('formModalTitle').innerText = backendIndex != null ? `> 修改目标后端` : `> 新增路由 / 端点`;
+        document.getElementById('deleteBackendBtn').style.display = backendIndex != null ? 'inline-block' : 'none';
 
         try {
             const latestConfig = await loadGlobalConfig();
 
             // 1. 清空表单
             document.getElementById('f_publicPort').value = '';
-            document.getElementById('f_routeName').value = '';
-            document.getElementById('f_protocol').value = 'http';
-            document.getElementById('f_loadBalance').value = 'round_robin';
-            document.getElementById('f_backendName').value = '';
+	            document.getElementById('f_routeName').value = '';
+	            document.getElementById('f_protocol').value = 'http';
+	            document.getElementById('f_stdioMode').value = 'stream';
+	            document.getElementById('f_loadBalance').value = 'round_robin';
+	            document.getElementById('f_backendName').value = '';
             document.getElementById('f_cmd').value = '';
             document.getElementById('f_args').value = '';
             document.getElementById('f_internalHost').value = '127.0.0.1';
             document.getElementById('f_internalPort').value = '';
+            updateProtocolFormState();
 
             // 2. 如果是编辑模式，查找并回填数据
-            if (internalPort) {
-                for (const [pPort, route] of Object.entries(latestConfig)) {
-                    const backend = route.backends?.find(b => b.internal_port === internalPort);
-                    if (backend) {
-                        document.getElementById('f_publicPort').value = pPort;
-                        document.getElementById('f_routeName').value = route.name || '';
-                        document.getElementById('f_protocol').value = route.protocol || 'http';
-                        document.getElementById('f_loadBalance').value = route.load_balance || 'round_robin';
-                        document.getElementById('f_backendName').value = backend.name || '';
-                        document.getElementById('f_cmd').value = backend.cmd || '';
-                        document.getElementById('f_args').value = (backend.args || []).join(' '); // 数组转字符串
-                        document.getElementById('f_internalHost').value = backend.internal_host || '127.0.0.1';
-                        document.getElementById('f_internalPort').value = backend.internal_port || '';
-                        break;
-                    }
+            if (publicPort && backendIndex != null) {
+                const route = latestConfig[publicPort];
+                const backend = route?.backends?.[backendIndex];
+	                if (route && backend) {
+	                    document.getElementById('f_publicPort').value = publicPort;
+	                    document.getElementById('f_routeName').value = route.name || '';
+	                    document.getElementById('f_protocol').value = route.protocol || 'http';
+	                    document.getElementById('f_stdioMode').value = route.stdio_mode || 'stream';
+	                    document.getElementById('f_loadBalance').value = route.load_balance || 'round_robin';
+	                    document.getElementById('f_backendName').value = backend.name || '';
+                    document.getElementById('f_cmd').value = backend.cmd || '';
+                    document.getElementById('f_args').value = (backend.args || []).join(' ');
+                    document.getElementById('f_internalHost').value = backend.internal_host || '127.0.0.1';
+                    document.getElementById('f_internalPort').value = backend.internal_port || '';
+                    updateProtocolFormState();
                 }
             }
             document.getElementById('formModal').classList.add('active');
@@ -339,11 +398,16 @@
         }
     }
 
-    async function saveFormModal() {
-        const pPort = document.getElementById('f_publicPort').value.trim();
-        const iPort = document.getElementById('f_internalPort').value.trim();
-        if (!pPort || !iPort) {
-            alert("对外暴露端口 (Public Port) 和目标端口 (Target Port) 不能为空！");
+	    async function saveFormModal() {
+	        const pPort = document.getElementById('f_publicPort').value.trim();
+	        const protocol = document.getElementById('f_protocol').value;
+	        const stdioMode = document.getElementById('f_stdioMode').value;
+	        const isSTDIO = protocol === 'stdio';
+	        const iPort = document.getElementById('f_internalPort').value.trim();
+        if (!pPort || (!isSTDIO && !iPort)) {
+            alert(isSTDIO
+                ? "对外暴露端口 (Public Port) 不能为空！"
+                : "对外暴露端口 (Public Port) 和目标端口 (Target Port) 不能为空！");
             return;
         }
 
@@ -359,8 +423,8 @@
         const newConfig = JSON.parse(JSON.stringify(latestConfig));
 
         // 1. 如果是编辑旧节点，先把它从原有的路由中剔除
-        if (editingInternalPort) {
-            removeBackendFromConfig(newConfig, editingInternalPort);
+        if (editingPublicPort && editingBackendIndex != null) {
+            removeBackendFromConfig(newConfig, editingPublicPort, editingBackendIndex);
         }
 
         // 2. 组装新节点数据
@@ -368,27 +432,36 @@
         const backend = {
             name: document.getElementById('f_backendName').value.trim(),
             cmd: document.getElementById('f_cmd').value.trim(),
-            args: argsStr ? argsStr.split(/\s+/) : [], // 字符串转数组
-            internal_host: document.getElementById('f_internalHost').value.trim() || "127.0.0.1",
-            internal_port: iPort
+            args: argsStr ? argsStr.split(/\s+/) : []
         };
 
+        if (!isSTDIO) {
+            backend.internal_host = document.getElementById('f_internalHost').value.trim() || "127.0.0.1";
+            backend.internal_port = iPort;
+        }
+
         // 3. 将新节点挂载到对应的 Route 下
-        if (!newConfig[pPort]) {
-                // 新路由
-                newConfig[pPort] = {
-                    name: document.getElementById('f_routeName').value.trim() || "Route-" + pPort,
-                    protocol: document.getElementById('f_protocol').value,
-                    load_balance: document.getElementById('f_loadBalance').value,
-                    backends: []
-                };
-            } else {
-                // 已有路由追加：支持同时修改路由属性
-                const rName = document.getElementById('f_routeName').value.trim();
-                if (rName) newConfig[pPort].name = rName;
-                newConfig[pPort].protocol = document.getElementById('f_protocol').value;
-                newConfig[pPort].load_balance = document.getElementById('f_loadBalance').value;
-            }
+	        if (!newConfig[pPort]) {
+	                // 新路由
+	                newConfig[pPort] = {
+	                    name: document.getElementById('f_routeName').value.trim() || "Route-" + pPort,
+	                    protocol: protocol,
+	                    stdio_mode: isSTDIO ? stdioMode : undefined,
+	                    load_balance: document.getElementById('f_loadBalance').value,
+	                    backends: []
+	                };
+	            } else {
+	                // 已有路由追加：支持同时修改路由属性
+	                const rName = document.getElementById('f_routeName').value.trim();
+	                if (rName) newConfig[pPort].name = rName;
+	                newConfig[pPort].protocol = protocol;
+	                if (isSTDIO) {
+	                    newConfig[pPort].stdio_mode = stdioMode;
+	                } else {
+	                    delete newConfig[pPort].stdio_mode;
+	                }
+	                newConfig[pPort].load_balance = document.getElementById('f_loadBalance').value;
+	            }
 
         newConfig[pPort].backends.push(backend);
 
@@ -397,8 +470,8 @@
     }
 
     async function deleteBackendFromForm() {
-        if (!editingInternalPort) return;
-        if (!confirm(`确定要删除目标端口 [${editingInternalPort}] 的子配置吗？`)) return;
+        if (!editingPublicPort || editingBackendIndex == null) return;
+        if (!confirm(`确定要删除当前后端配置吗？`)) return;
 
         let latestConfig;
         try {
@@ -409,7 +482,7 @@
         }
 
         const newConfig = JSON.parse(JSON.stringify(latestConfig));
-        removeBackendFromConfig(newConfig, editingInternalPort);
+        removeBackendFromConfig(newConfig, editingPublicPort, editingBackendIndex);
         await postConfig(JSON.stringify(newConfig, null, 2), () => closeModal('formModal'));
     }
 
@@ -430,19 +503,19 @@
     }
 
     /* ================= 日志与杀死进程 (不变) ================= */
-    function openLogModal(port) {
-        currentLogPort = port;
-        document.getElementById('modalTitle').innerText = `> tail -f logs | port: ${port}`;
+    function openLogModal(ref, label) {
+        currentLogRef = ref;
+        document.getElementById('modalTitle').innerText = `> tail -f logs | backend: ${label}`;
         document.getElementById('logModal').classList.add('active');
         document.getElementById('logContent').innerText = "加载中...";
         fetchLogs();
     }
 
     async function fetchLogs() {
-        if (!currentLogPort) return;
+        if (!currentLogRef) return;
         const content = document.getElementById('logContent');
         try {
-            const res = await fetch(`${API_BASE}/logs/${currentLogPort}`);
+            const res = await fetch(`${API_BASE}/logs/${encodeURIComponent(currentLogRef)}`);
             const json = await res.json();
             if (json.code === 200) {
                 content.innerText = json.data.length > 0 ? json.data.join('\n') : '暂无日志输出 (Process output is empty)...';
@@ -453,14 +526,14 @@
         }
     }
 
-    async function killProcess(port) {
-        if (confirm(`【警告】确定要物理杀死内部端口 [${port}] 下的物理进程吗？\n下一次请求到达时，网关会将其重新冷启动。`)) {
+    async function killProcess(ref, label) {
+        if (confirm(`【警告】确定要杀死后端 [${label}] 当前托管的常驻进程吗？\n下一次请求到达时，网关会将其重新冷启动。`)) {
             try {
-                const res = await fetch(`${API_BASE}/process/${port}`, { method: 'DELETE' });
+                const res = await fetch(`${API_BASE}/process/${encodeURIComponent(ref)}`, { method: 'DELETE' });
                 const json = await res.json();
                 if (json.code === 200) {
                     await fetchStatus();
-                    if (currentLogPort === port) await fetchLogs();
+                    if (currentLogRef === ref) await fetchLogs();
                 }
                 else alert("杀死失败: " + json.error);
             } catch (e) {
@@ -471,8 +544,11 @@
 
     function closeModal(modalId) {
         document.getElementById(modalId).classList.remove('active');
-        if (modalId === 'logModal') currentLogPort = null;
-        if (modalId === 'formModal') editingInternalPort = null;
+        if (modalId === 'logModal') currentLogRef = null;
+        if (modalId === 'formModal') {
+            editingPublicPort = null;
+            editingBackendIndex = null;
+        }
     }
     
     // 监听全局键盘事件，按下 ESC 键自动关闭所有当前打开的弹窗
@@ -485,7 +561,10 @@
         }
     });
 
-    // 启动轮询
+	    // 启动轮询
+	    document.getElementById('f_protocol').addEventListener('change', updateProtocolFormState);
+	    document.getElementById('f_stdioMode').addEventListener('change', updateProtocolFormState);
+	    updateProtocolFormState();
     refreshDashboardState();
     setInterval(fetchStatus, 2000);
 </script>
