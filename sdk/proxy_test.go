@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -123,8 +124,16 @@ func TestRouteHandleRequestInternalRouteIsCaseInsensitive(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://console.example.com" {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, "https://console.example.com")
 	}
-	if !strings.Contains(rec.Body.String(), `"mesh": "running"`) {
-		t.Fatalf("body = %q, want mesh health payload", rec.Body.String())
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v body=%s", err, rec.Body.String())
+	}
+	if got := payload["mesh"]; got != "running" {
+		t.Fatalf("payload mesh = %#v, want %q", got, "running")
+	}
+	if got := payload["version"]; got != DefaultHealthzVersion {
+		t.Fatalf("payload version = %#v, want %q", got, DefaultHealthzVersion)
 	}
 }
 

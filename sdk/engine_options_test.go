@@ -2,6 +2,8 @@ package mesh
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -65,7 +67,7 @@ func TestEngineRunSkipsBrowserOpenWhenNoDashboard(t *testing.T) {
 		errCh <- engine.Run(ctx)
 	}()
 
-	waitForHTTPBody(t, "http://127.0.0.1:"+publicPort+"/health", `{"status": "ok", "mesh": "running"}`)
+	waitForHTTPHealthz(t, "http://127.0.0.1:"+publicPort+"/healthz", DefaultHealthzVersion)
 
 	select {
 	case url := <-called:
@@ -129,4 +131,34 @@ func stubDashboardBrowserOpener(fn func(string)) func() {
 	return func() {
 		dashboardBrowserOpener = previous
 	}
+}
+
+func waitForHTTPHealthz(t *testing.T, url string, wantVersion string) {
+	t.Helper()
+
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			var payload map[string]any
+			decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
+			_ = resp.Body.Close()
+			if decodeErr == nil &&
+				resp.StatusCode == http.StatusOK &&
+				payload["status"] == "ok" &&
+				payload["mesh"] == "running" &&
+				payload["version"] == wantVersion {
+				return
+			}
+			lastErr = decodeErr
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	t.Fatalf("GET %s did not return expected healthz payload before timeout: %v", url, lastErr)
 }

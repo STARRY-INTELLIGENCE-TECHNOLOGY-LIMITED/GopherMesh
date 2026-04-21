@@ -42,6 +42,7 @@ type MeshEngine interface {
 
 type EngineOptions struct {
 	NoDashboard bool
+	Healthz     HealthzOptions
 }
 
 type ProcessInfo struct {
@@ -60,6 +61,7 @@ type Engine struct {
 	role              Role
 	dashboardListener net.Listener
 	options           EngineOptions
+	healthzOptions    HealthzOptions
 
 	cfgMu sync.RWMutex
 	cfg   Config
@@ -103,6 +105,7 @@ func NewEngineWithOptions(cfg Config, opts EngineOptions) (MeshEngine, error) {
 		role:              role,
 		dashboardListener: listener,
 		options:           opts,
+		healthzOptions:    normalizeHealthzOptions(opts.Healthz),
 		process:           make(map[string]*ProcessInfo),
 		logBufs:           make(map[string]*LogBuffer),
 	}, nil
@@ -447,8 +450,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 }
 
 func (e *Engine) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status": "ok", "mesh": "running"}`))
+	WriteHealthz(w, e.healthzOptions)
 }
 
 // detectRole 尝试绑定 Dashboard 端口以决定当前进程的角色
